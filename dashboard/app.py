@@ -794,6 +794,8 @@ if PAGE == "India" and not cityd.empty:
         cur = win.groupby(["commodity", "city"], as_index=False).agg(
             price=("modal_price_kg", "median"), days=("date", "nunique")
         )
+        spread_x = cur.groupby("commodity")["price"].agg(lambda p: p.max() / p.min() if p.min() > 0 else float("inf"))
+        MIXED_UNITS = set(spread_x[spread_x > 8].index)  # e.g. coriander: some markets quote per bunch
         items = [c for c in COMMODITY_ORDER if c in set(cur["commodity"])]
 
         with st.container(key="card-in-pick"):
@@ -806,6 +808,12 @@ if PAGE == "India" and not cityd.empty:
                     "the latest window most cities report in. A city's price is the median of its markets.</div>"
                 )
             ci = cur[cur["commodity"] == item].sort_values("price")
+            if item in MIXED_UNITS:
+                st.warning(
+                    f"{item}: markets quote this item in different units (per kg vs per bunch), so a "
+                    "cross-city comparison isn't meaningful. The city pages still show each city's own trend."
+                )
+                ci = ci.iloc[0:0]
             if len(ci) >= 2:
                 lo_c, hi_c = ci.iloc[0], ci.iloc[-1]
                 nat = ci["price"].median()
@@ -893,7 +901,7 @@ if PAGE == "India" and not cityd.empty:
                 f'<span style="color:{t["div_pos"]};font-weight:600">blue = cheaper</span> · '
                 f'<span style="color:{t["div_neg"]};font-weight:600">red = pricier</span>',
             )
-            hm = cur.copy()
+            hm = cur[~cur["commodity"].isin(MIXED_UNITS)].copy()
             hm["nat"] = hm.groupby("commodity")["price"].transform("median")
             hm = hm[hm.groupby("commodity")["city"].transform("nunique") >= 3]  # need a few cities to compare
             hm["vs"] = (hm["price"] / hm["nat"] - 1) * 100
@@ -939,6 +947,11 @@ if PAGE == "India" and not cityd.empty:
                 )
             )
             show(alt.layer(heat, txt), 24 * len(rows) + 40)
+            if MIXED_UNITS:
+                st.html(
+                    f'<div class="fpr-sub">Not compared: {", ".join(sorted(MIXED_UNITS))}, because markets quote '
+                    "them in different units (per kg vs per bunch).</div>"
+                )
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # Prices
