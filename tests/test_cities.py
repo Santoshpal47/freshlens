@@ -42,3 +42,25 @@ def test_city_price_is_the_median_of_its_markets(spark):
     out = marts.city_daily(df).collect()
     assert len(out) == 1 and out[0]["city"] == "Bengaluru" and out[0]["n_markets"] == 2
     assert out[0]["modal_price_kg"] in (20.0, 30.0)  # percentile_approx returns an actual value
+
+
+def test_unit_errors_are_kept_out_of_city_prices(spark):
+    # Pune quotes coriander per bunch: ₹0.3/kg-equivalent vs ~₹40 elsewhere → a unit error, not a price
+    rows = [
+        (date(2025, 1, d), c, m, 7, "Coriander(Leaves)", "Coriander", "herb", p)
+        for d in (1, 2)
+        for c, m, p in [
+            ("Delhi NCR", "Azadpur", 40.0),
+            ("Mumbai", "Mumbai", 45.0),
+            ("Pune", "Pune", 0.3),
+            ("Jaipur", "Jaipur", 38.0),
+        ]
+    ]
+    df = spark.createDataFrame(
+        rows,
+        "date date, city string, market string, commodity_key long, commodity string, "
+        "display_name string, category string, modal_price_kg double",
+    )
+    flagged = marts.flag_unit_outliers(df)
+    assert {r["market"] for r in flagged.where("unit_outlier").collect()} == {"Pune"}
+    assert "Pune" not in {r["city"] for r in marts.city_daily(flagged).collect()}

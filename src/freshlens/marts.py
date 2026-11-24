@@ -55,8 +55,30 @@ def mandi_daily(spark: SparkSession, settings: Settings) -> DataFrame:
     )
 
 
+def flag_unit_outliers(daily: DataFrame, low: float = 0.2, high: float = 5.0) -> DataFrame:
+    """Flag market-days priced < 1/5 or > 5x the item's all-India median that month.
+
+    Some markets quote leafy items per bunch or per 100 pieces instead of per quintal, so their ₹/kg comes
+    out near zero (or absurdly high). Those are unit errors, not prices, and must not reach city comparisons.
+    """
+    month = F.date_trunc("month", "date")
+    nat = daily.groupBy("commodity_key", month.alias("_m")).agg(
+        F.percentile_approx("modal_price_kg", 0.5).alias("_nat")
+    )
+    ratio = F.col("modal_price_kg") / F.col("_nat")
+    return (
+        daily.withColumn("_m", month)
+        .join(nat, ["commodity_key", "_m"], "left")
+        .withColumn("unit_outlier", F.coalesce((ratio < low) | (ratio > high), F.lit(False)))
+        .drop("_m", "_nat")
+    )
+
+
 def city_daily(daily: DataFrame) -> DataFrame:
-    """One price per city × item × day: median across the city's markets that reported that day."""
+    """One price per city × item × day: median across the city's markets that reported that day
+    (likely unit errors excluded)."""
+    if "unit_outlier" in daily.columns:
+        daily = daily.where(~F.col("unit_outlier"))
     return (
         daily.where(F.col("city").isNotNull())
         .groupBy("date", "city", "commodity_key", "commodity", "display_name", "category")
@@ -274,7 +296,7 @@ def alert_backtest(src_w: DataFrame, dst_w: DataFrame, settings: Settings) -> tu
 
 
 def build_marts(spark: SparkSession, settings: Settings) -> None:
-    daily = mandi_daily(spark, settings)
+    daily = flag_unit_outliers(mandi_daily(spark, settings))
     _write(daily, settings, "mart_mandi_daily")
     daily = _read(spark, settings, "gold", "mart_mandi_daily")
 
