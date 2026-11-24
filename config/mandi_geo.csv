@@ -1,0 +1,12 @@
+state,market,lat,lon,role
+NCT of Delhi,Azadpur,28.7106,77.1726,destination
+NCT of Delhi,Keshopur,28.6496,77.0880,destination
+NCT of Delhi,Shahdara,28.6735,77.2899,destination
+NCT of Delhi,Ghazipur,28.6247,77.3256,destination
+NCT of Delhi,Narela,28.8526,77.0929,destination
+NCT of Delhi,Najafgarh,28.6092,76.9798,destination
+Maharashtra,Lasalgaon,20.1497,74.2391,source
+Maharashtra,Pimpalgaon,20.1667,73.9833,source
+Karnataka,Kolar,13.1367,78.1292,source
+Andhra Pradesh,Madanapalli,13.5503,78.5029,source
+Uttar Pradesh,Agra,27.1767,78.0081,source

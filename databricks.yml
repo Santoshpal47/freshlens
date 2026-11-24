@@ -1,0 +1,43 @@
+# Databricks Asset Bundle — deploy with:  databricks bundle deploy -t dev
+# Runs the daily job at 22:30 IST, after most mandis have reported.
+bundle:
+  name: freshlens
+
+variables:
+  data_root:
+    description: Unity Catalog volume that holds raw files and Delta tables
+    default: /Volumes/workspace/freshlens/data
+
+artifacts:
+  wheel:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+resources:
+  jobs:
+    freshlens_daily:
+      name: freshlens-daily
+      schedule:
+        quartz_cron_expression: "0 30 22 * * ?"
+        timezone_id: Asia/Kolkata
+      email_notifications:
+        on_failure: []      # add your address
+      tasks:
+        - task_key: daily
+          environment_key: default
+          python_wheel_task:
+            package_name: freshlens
+            entry_point: fpr
+            parameters: ["--data-root", "${var.data_root}", "daily"]
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/*.whl
+
+targets:
+  dev:
+    default: true
+    mode: development

@@ -1,0 +1,104 @@
+# Nightly refresh. Runs on GitHub's servers, so no laptop needs to be on.
+#
+#   data branch    append-only raw landing zone (gzip JSON) = the durable source of truth
+#   Actions cache  the Delta lake, so most nights only today's batch is processed (incremental)
+#   deploy branch  code + a fresh 1-2 MB dashboard snapshot, replaced every night (never grows);
+#                  Streamlit Community Cloud serves the public dashboard from it
+#
+# Needs repository secret DATA_GOV_IN_API_KEY.
+name: daily-refresh
+
+on:
+  schedule:
+    - cron: "0 17 * * *" # 17:00 UTC = 22:30 IST, after most markets have reported
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SPARK_LOCAL_IP: 127.0.0.1
+      DATA_GOV_IN_API_KEY: ${{ secrets.DATA_GOV_IN_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out code (main)
+        uses: actions/checkout@v4
+
+      - name: Check out raw landing zone (data branch)
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data/raw
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Land today's prices (raw, gzip)
+        run: uv run freshlens daily --land-only
+
+      - name: Persist raw snapshot to the data branch
+        working-directory: data/raw
+        run: |
+          git config user.name "freshlens-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -qm "raw: daily snapshot $(date -u +%F)"
+          git push -q origin HEAD:data
+
+      - name: Restore Delta lake
+        uses: actions/cache/restore@v4
+        with:
+          path: data/lake
+          key: lake-${{ github.run_id }}
+          restore-keys: lake-
+
+      - name: Build the lake (incremental, or full rebuild on a cold cache)
+        run: |
+          if [ -d data/lake/silver/prices/_delta_log ]; then
+            # re-run the last 3 landed days: idempotent, and heals a night that failed after landing
+            for d in $(ls -d data/raw/daily/ingest_date=* | sed 's/.*=//' | sort | tail -3); do
+              uv run freshlens daily --no-fetch --date "$d"
+            done
+          else
+            uv run freshlens rebuild
+          fi
+
+      - name: Save Delta lake
+        uses: actions/cache/save@v4
+        with:
+          path: data/lake
+          key: lake-${{ github.run_id }}
+
+      - name: Export dashboard snapshot
+        run: uv run freshlens export
+
+      - name: Publish deploy branch (code + snapshot, single commit)
+        run: |
+          out=$(mktemp -d)
+          git archive HEAD | tar -x -C "$out"
+          rm -rf "$out/.github"                       # no workflows on the deploy branch
+          mkdir -p "$out/dashboard/snapshot"
+          cp dashboard/snapshot/*.parquet "$out/dashboard/snapshot/"
+          cd "$out"
+          git init -q -b deploy
+          git config user.name "freshlens-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "deploy: code ${GITHUB_SHA::7} + data $(date -u +%F)"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" deploy

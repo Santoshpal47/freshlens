@@ -1,0 +1,52 @@
+[project]
+name = "freshlens"
+version = "0.1.0"
+description = "FreshLens: fresh-produce price intelligence for quick commerce (Agmarknet → PySpark/Delta lakehouse → sourcing signals)"
+authors = [{ name = "Santosh Kumar" }]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "delta-spark>=4.0,<4.1",
+    "h3>=4,<5",
+    "pandas>=3.1.1",
+    "pyarrow>=26.0.1",
+    "pyspark>=4.0,<4.1",
+    "pyyaml>=6.0.4",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+freshlens = "freshlens.cli:main"
+fpr = "freshlens.cli:main"  # short alias
+
+[project.optional-dependencies]
+dashboard = [
+    "altair>=6.3.0",
+    "deltalake>=1.7.0",
+    "pandas>=3.1.1",
+    "streamlit>=1.67.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "install-jdk>=1.1.0",
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["freshlens", "conftest"]
+
+[tool.ruff.lint.per-file-ignores]
+"dashboard/*" = ["E501"]  # long inline CSS / HTML strings

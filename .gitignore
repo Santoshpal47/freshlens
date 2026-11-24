@@ -1,0 +1,19 @@
+# local runtime
+.venv/
+.jdk/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# secrets
+.env
+
+# data lake (re-buildable from the API)
+data/
+
+# built nightly onto the deploy branch
+dashboard/snapshot/
