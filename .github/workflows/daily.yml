@@ -1,20 +1,25 @@
-# Nightly refresh. Runs on GitHub's servers, so no laptop needs to be on.
+# Nightly build + deploy, on GitHub's servers.
+#
+# Landing is NOT done here: api.data.gov.in only answers requests from Indian IP addresses, and GitHub's
+# runners are abroad (requests time out). An India-based machine runs scripts/sync_daily.sh, which lands
+# today's prices, pushes them to the data branch and triggers this workflow. The cron below is a
+# fallback that builds from whatever is on the data branch if that trigger didn't happen.
 #
 #   data branch    append-only raw landing zone (gzip JSON) = the durable source of truth
 #   Actions cache  the Delta lake, so most nights only today's batch is processed (incremental)
 #   deploy branch  code + a fresh 1-2 MB dashboard snapshot, replaced every night (never grows);
 #                  Streamlit Community Cloud serves the public dashboard from it
 #
-# Needs repository secret DATA_GOV_IN_API_KEY.
 name: daily-refresh
 
 on:
   schedule:
-    - cron: "0 17 * * *" # 17:00 UTC = 22:30 IST, after most markets have reported
+    - cron: "30 18 * * *" # 18:30 UTC = 00:00 IST fallback (skips if tonight's build already ran)
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: daily-refresh
@@ -26,42 +31,41 @@ jobs:
     timeout-minutes: 60
     env:
       SPARK_LOCAL_IP: 127.0.0.1
-      DATA_GOV_IN_API_KEY: ${{ secrets.DATA_GOV_IN_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Skip the fallback run if tonight's build already succeeded
+        if: github.event_name == 'schedule'
+        run: |
+          n=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-refresh -s success --created ">=$(date -u -d '-6 hours' +%FT%TZ)" --json databaseId --jq length)
+          if [ "$n" -gt 0 ]; then echo "already built tonight"; echo "SKIP=1" >> "$GITHUB_ENV"; fi
+
       - name: Check out code (main)
+        if: env.SKIP != '1'
         uses: actions/checkout@v4
 
       - name: Check out raw landing zone (data branch)
+        if: env.SKIP != '1'
         uses: actions/checkout@v4
         with:
           ref: data
           path: data/raw
 
-      - uses: actions/setup-java@v4
+      - if: env.SKIP != '1'
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: astral-sh/setup-uv@v6
+      - if: env.SKIP != '1'
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
-      - run: uv sync
-
-      - name: Land today's prices (raw, gzip)
-        run: uv run freshlens daily --land-only
-
-      - name: Persist raw snapshot to the data branch
-        working-directory: data/raw
-        run: |
-          git config user.name "freshlens-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet || git commit -qm "raw: daily snapshot $(date -u +%F)"
-          git push -q origin HEAD:data
+      - if: env.SKIP != '1'
+        run: uv sync
 
       - name: Restore Delta lake
+        if: env.SKIP != '1'
         uses: actions/cache/restore@v4
         with:
           path: data/lake
@@ -69,6 +73,7 @@ jobs:
           restore-keys: lake-
 
       - name: Build the lake (incremental, or full rebuild on a cold cache)
+        if: env.SKIP != '1'
         run: |
           if [ -d data/lake/silver/prices/_delta_log ]; then
             # re-run the last 3 landed days: idempotent, and heals a night that failed after landing
@@ -80,15 +85,18 @@ jobs:
           fi
 
       - name: Save Delta lake
+        if: env.SKIP != '1'
         uses: actions/cache/save@v4
         with:
           path: data/lake
           key: lake-${{ github.run_id }}
 
       - name: Export dashboard snapshot
+        if: env.SKIP != '1'
         run: uv run freshlens export
 
       - name: Publish deploy branch (code + snapshot, single commit)
+        if: env.SKIP != '1'
         run: |
           out=$(mktemp -d)
           git archive HEAD | tar -x -C "$out"
