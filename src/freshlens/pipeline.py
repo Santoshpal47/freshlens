@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from datetime import date, datetime
 from pathlib import Path
@@ -18,10 +19,15 @@ log = logging.getLogger(__name__)
 
 
 def make_client(settings: Settings) -> DataGovClient:
+    """API client. FRESHLENS_API_BASE + FRESHLENS_RELAY_KEY route requests through the India relay
+    (relay/): api.data.gov.in only answers Indian IP addresses."""
     src = settings.source
+    relay = os.environ.get("FRESHLENS_API_BASE", "").strip()
+    headers = {"x-relay-key": os.environ["FRESHLENS_RELAY_KEY"]} if relay else None
     return DataGovClient(
         api_key=api_key(),
-        base_url=src["base_url"],
+        base_url=relay or src["base_url"],
+        headers=headers,
         page_size=src["page_size"],
         timeout_s=src["request_timeout_s"],
         max_retries=src["max_retries"],

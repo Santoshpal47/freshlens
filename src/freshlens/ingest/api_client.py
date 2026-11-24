@@ -47,6 +47,7 @@ class DataGovClient:
         backoff_s: float = 2.0,
         session: requests.Session | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._key = api_key
         self.base_url = base_url.rstrip("/")
@@ -57,6 +58,7 @@ class DataGovClient:
         self.session = session or requests.Session()
         if hasattr(self.session, "headers"):
             self.session.headers["User-Agent"] = USER_AGENT
+            self.session.headers.update(headers or {})
         self._sleep = sleep
 
     # ------------------------------------------------------------------------------------
