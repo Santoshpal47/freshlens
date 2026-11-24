@@ -79,7 +79,10 @@ THEMES = {
 _CFG = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "settings.yaml").read_text())
 DISPLAY = {c: (_CFG.get("display_names") or {}).get(c, c) for c in _CFG["commodities"]}
 CATEGORY = {DISPLAY[c]: cat for c, cat in _CFG["commodities"].items()}
-COMMODITY_ORDER = list(DISPLAY.values())  # config order; display names (e.g. "Cucumbar(Kheera)" → "Cucumber")
+COMMODITY_ORDER = list(DISPLAY.values())
+CITIES = list(
+    (_CFG.get("cities") or {"Delhi NCR": ["Azadpur"]}).keys()
+)  # config order; display names (e.g. "Cucumbar(Kheera)" → "Cucumber")
 FONT = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
 # ── theme state: ?theme=night survives a refresh and makes links shareable ─────────────────────
@@ -365,18 +368,19 @@ with head_l:
         f"""
 <div class="fpr-brand"><div class="fpr-logo">🥬</div><div>
   <div class="fpr-title">FreshLens</div>
-  <div class="fpr-tag">Wholesale market prices → sourcing signals for Delhi NCR dark stores</div></div></div>
+  <div class="fpr-tag">Wholesale market prices → sourcing signals for quick-commerce dark stores across India</div></div></div>
 <div class="fpr-chips">
   <span class="fpr-chip"><span class="fpr-dot" style="background:{t["good"]}"></span>
     Live feed <b>{live["date"].max():%d %b %Y}</b></span>
   <span class="fpr-chip">History <b>{hist["date"].min():%Y}–{hist["date"].max():%Y}</b></span>
-  <span class="fpr-chip"><b>{daily["market"].nunique():,}</b> markets · <b>{len(daily):,}</b> market-days</span>
+  <span class="fpr-chip"><b>{len(CITIES)}</b> cities · <b>{daily["market"].nunique():,}</b> markets · <b>{len(daily):,}</b> market-days</span>
   <span class="fpr-chip">Prices in <b>₹/kg</b> (modal, median across varieties)</span>
 </div>"""
     )
 
 PAGES = {
     "Overview": ":material/space_dashboard:",
+    "India": ":material/public:",
     "Prices": ":material/show_chart:",
     "Volatility": ":material/ssid_chart:",
     "Sourcing": ":material/local_shipping:",
@@ -386,9 +390,15 @@ if "page" not in st.session_state:
     st.session_state.page = st.query_params.get("page", "Overview")
     if st.session_state.page not in PAGES:
         st.session_state.page = "Overview"
+if "city" not in st.session_state:
+    st.session_state.city = st.query_params.get("city", CITIES[0])
+    if st.session_state.city not in CITIES:
+        st.session_state.city = CITIES[0]
 nav, content = st.columns([1, 5.2], gap="medium")
 with nav, st.container(key="navcard"):
-    st.html('<div class="fpr-navlabel">Menu</div>')
+    st.html('<div class="fpr-navlabel">City</div>')
+    CITY = st.selectbox("City", CITIES, key="city", label_visibility="collapsed")
+    st.html('<div class="fpr-navlabel" style="margin-top:10px">Menu</div>')
     PAGE = st.radio(
         "Navigate",
         list(PAGES),
@@ -397,21 +407,43 @@ with nav, st.container(key="navcard"):
         format_func=lambda name: f"{PAGES[name]}  {name}",
     )
 st.query_params["page"] = PAGE
+st.query_params["city"] = CITY
 
+cityd = load("mart_city_daily")  # one price per city × item × day (median of the city's markets)
+cityv = load("mart_city_volatility")
 vol = load("mart_volatility")
 spread = load("mart_sourcing_spread")
 llw = load("mart_lead_lag_weekly")
 lld = load("mart_lead_lag")
 bt = load("mart_alert_backtest")
 alerts = load("mart_alerts")
-LANES = list(dict.fromkeys(spread["lane"])) if not spread.empty else []
-LANES = sorted(
-    LANES, key=lambda x: (COMMODITY_ORDER.index(x.split(":")[0]) if x.split(":")[0] in COMMODITY_ORDER else 9, x)
+ALL_LANES = list(dict.fromkeys(spread["lane"])) if not spread.empty else []
+ALL_LANES = sorted(
+    ALL_LANES,
+    key=lambda x: (
+        CITIES.index(x.split("→")[-1].strip()) if x.split("→")[-1].strip() in CITIES else 99,
+        COMMODITY_ORDER.index(x.split(":")[0]) if x.split(":")[0] in COMMODITY_ORDER else 99,
+        x,
+    ),
 )
+LANES = [ln for ln in ALL_LANES if ln.split("→")[-1].strip() == CITY]  # lanes into the selected city
+LANE_CITIES = sorted({ln.split("→")[-1].strip() for ln in ALL_LANES}, key=CITIES.index)
+hubd = cityd[cityd["city"] == CITY]  # the selected city's price series
+HUB = CITY  # used in titles
+
+
+def no_lanes() -> None:
+    with st.container(key="card-nolanes"):
+        card_head(
+            f"No sourcing lanes into {CITY} yet",
+            "Lanes compare a city's price with a source market's price plus freight. Configured for: "
+            + ", ".join(LANE_CITIES)
+            + ". Add one in config/settings.yaml → lanes.",
+        )
 
 
 def hub_latest(commodity: str) -> tuple[float, float | None, pd.Timestamp] | None:
-    s = daily[(daily["market"] == HUB) & (daily["commodity"] == commodity)].sort_values("date")
+    s = hubd[hubd["commodity"] == commodity].sort_values("date")
     if s.empty:
         return None
     last = s.iloc[-1]
@@ -422,10 +454,15 @@ def hub_latest(commodity: str) -> tuple[float, float | None, pd.Timestamp] | Non
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # Overview
 # ════════════════════════════════════════════════════════════════════════════════════════════════
-if PAGE == "Overview":
+if PAGE == "Overview" and hubd.empty:
+    with content, st.container(key="card-nodata"):
+        card_head(
+            f"No price history for {CITY} yet",
+            "Its markets are configured; data appears after the next backfill or nightly run.",
+        )
+elif PAGE == "Overview":
     with content:
         TOP3 = ["Tomato", "Onion", "Potato"]
-        hubd = daily[daily["market"] == HUB]
 
         # ── row 1: today's prices + best warning lane ──────────────────────────────────────────
         tiles = []
@@ -440,9 +477,12 @@ if PAGE == "Overview":
                     f'<div class="fpr-tile-foot">{pct_delta(now, then)} · {d:%d %b %Y}</div></div>'
                 )
         if not bt.empty:
-            b = bt.assign(edge=bt["hit_rate_pct"] - bt["base_rate_up_pct"]).sort_values("edge", ascending=False).iloc[0]
+            cb = bt[bt["lane"].isin(LANES)]  # this city's lanes, else the best in India
+            where = "" if not cb.empty else " · India"
+            cb = cb if not cb.empty else bt
+            b = cb.assign(edge=cb["hit_rate_pct"] - cb["base_rate_up_pct"]).sort_values("edge", ascending=False).iloc[0]
             tiles.append(
-                f'<div class="fpr-tile"><div class="fpr-tile-label">Best early-warning lane</div>'
+                f'<div class="fpr-tile"><div class="fpr-tile-label">Best early-warning lane{where}</div>'
                 f'<div class="fpr-tile-value">+{b["edge"]:.1f}<small>pp</small></div>'
                 f'<div class="fpr-tile-foot">{html.escape(b["lane"])}: {b["hit_rate_pct"]:.0f}% vs '
                 f"{b['base_rate_up_pct']:.0f}% base</div></div>"
@@ -453,8 +493,12 @@ if PAGE == "Overview":
         # ── row 2: headline stats ───────────────────────────────────────────────────────────────
         stats = []
         if not vol.empty:
-            v = vol[(vol["market"] == HUB) & vol["log_return"].notna()].groupby("commodity")["log_return"].std() * 100
+            v = (
+                cityv[(cityv["city"] == CITY) & cityv["log_return"].notna()].groupby("commodity")["log_return"].std()
+                * 100
+            )
             v = v.sort_values(ascending=False)
+        if not vol.empty and len(v):
             stats.append(
                 (
                     "Most volatile item",
@@ -462,6 +506,7 @@ if PAGE == "Overview":
                     f"{v.index[0]} · least volatile: {v.index[-1]} ({v.iloc[-1]:.1f}%)",
                 )
             )
+        wk3 = pd.DataFrame(columns=["date", "commodity", "modal_price_kg"])
         h3 = hubd[(hubd["commodity"].isin(TOP3)) & (hubd["date"] >= hubd["date"].max() - pd.Timedelta(days=3 * 365))]
         if not h3.empty:
             wk3 = (
@@ -479,10 +524,13 @@ if PAGE == "Overview":
                 )
             )
         if not spread.empty:
-            sh = spread.groupby("lane")["direct_sourcing_cheaper"].mean().sort_values(ascending=False) * 100
+            sp_ = spread[spread["lane"].isin(LANES)]
+            in_city = not sp_.empty
+            sp_ = sp_ if in_city else spread
+            sh = sp_.groupby("lane")["direct_sourcing_cheaper"].mean().sort_values(ascending=False) * 100
             stats.append(
                 (
-                    "Best lane to buy direct",
+                    "Best lane to buy direct" + ("" if in_city else " · India"),
                     f"{sh.iloc[0]:.0f}%<small>of days</small>",
                     f"{html.escape(sh.index[0])} · worst: {html.escape(sh.index[-1].split(':')[0])} "
                     f"{html.escape(sh.index[-1].split(':')[1].split('→')[0].strip())} ({sh.iloc[-1]:.0f}%)",
@@ -490,9 +538,10 @@ if PAGE == "Overview":
             )
         stats.append(
             (
-                "Prices analysed",
-                f"{len(daily):,}<small>market-days</small>",
-                f"{daily['market'].nunique():,} markets · {daily['date'].min():%Y}–{daily['date'].max():%Y}",
+                f"Prices analysed · {CITY}",
+                f"{len(hubd):,}<small>item-days</small>",
+                f"{daily.loc[daily['city'] == CITY, 'market'].nunique()} markets · "
+                f"{hubd['date'].min():%Y}–{hubd['date'].max():%Y}",
             )
         )
         st.html(
@@ -510,7 +559,10 @@ if PAGE == "Overview":
         left, right = st.columns([1.6, 1], gap="medium")
         with left, st.container(key="card-ov-trend"):
             card_head(f"{HUB} prices, last 3 years", "Weekly median price · hover for values")
-            show(line_chart(wk3, "commodity", "modal_price_kg", TOP3, "₹/kg"), 290)
+            if wk3.empty:
+                st.info(f"No tomato, onion or potato history for {CITY} in the last 3 years.")
+            else:
+                show(line_chart(wk3, "commodity", "modal_price_kg", TOP3, "₹/kg"), 290)
 
         with right, st.container(key="card-ov-now"):
             last_month = hubd["date"].max()
@@ -714,6 +766,181 @@ if PAGE == "Overview":
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
+# India: compare cities
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+def comparison_window(cd: pd.DataFrame, min_cities: int = 5) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The latest 4-week window that at least `min_cities` cities have data in, so cities compare like-for-like."""
+    ends = sorted(cd["date"].dt.normalize().unique(), reverse=True)
+    checked = set()
+    for end in ends:
+        end = pd.Timestamp(end)
+        key = end.to_period("W")
+        if key in checked:
+            continue
+        checked.add(key)
+        w = cd[(cd["date"] > end - pd.Timedelta(days=28)) & (cd["date"] <= end)]
+        if w["city"].nunique() >= min(min_cities, cd["city"].nunique()):
+            return end - pd.Timedelta(days=27), end
+        if len(checked) > 120:
+            break
+    end = cd["date"].max()
+    return end - pd.Timedelta(days=27), end
+
+
+if PAGE == "India" and not cityd.empty:
+    with content:
+        lo, hi = comparison_window(cityd[["date", "city"]].drop_duplicates())
+        win = cityd[(cityd["date"] >= lo) & (cityd["date"] <= hi)]
+        cur = win.groupby(["commodity", "city"], as_index=False).agg(
+            price=("modal_price_kg", "median"), days=("date", "nunique")
+        )
+        items = [c for c in COMMODITY_ORDER if c in set(cur["commodity"])]
+
+        with st.container(key="card-in-pick"):
+            f1, f2 = st.columns([1, 2.4], vertical_alignment="bottom")
+            with f1:
+                item = st.selectbox("Item", items, index=0, key="in_item")
+            with f2:
+                st.html(
+                    f'<div class="fpr-sub" style="margin:0 0 8px">Comparing the 4 weeks {lo:%d %b} – {hi:%d %b %Y}: '
+                    "the latest window most cities report in. A city's price is the median of its markets.</div>"
+                )
+            ci = cur[cur["commodity"] == item].sort_values("price")
+            if len(ci) >= 2:
+                lo_c, hi_c = ci.iloc[0], ci.iloc[-1]
+                nat = ci["price"].median()
+                mine = ci[ci["city"] == CITY]
+                mine_txt = f"{rs(mine['price'].iloc[0])}<small>/kg</small>" if len(mine) else "–"
+                mine_foot = (
+                    f"{(mine['price'].iloc[0] / nat - 1) * 100:+.0f}% vs India median {rs(nat)}"
+                    if len(mine)
+                    else "no recent data for this city"
+                )
+                st.html(f"""<div class="fpr-tiles" style="margin-top:6px">
+<div class="fpr-tile"><div class="fpr-tile-label">Cheapest city</div><div class="fpr-tile-value">{rs(lo_c["price"])}<small>/kg</small></div>
+  <div class="fpr-tile-foot">{html.escape(lo_c["city"])}</div></div>
+<div class="fpr-tile"><div class="fpr-tile-label">Priciest city</div><div class="fpr-tile-value">{rs(hi_c["price"])}<small>/kg</small></div>
+  <div class="fpr-tile-foot">{html.escape(hi_c["city"])}</div></div>
+<div class="fpr-tile"><div class="fpr-tile-label">Price gap across India</div>
+  <div class="fpr-tile-value">{(hi_c["price"] / lo_c["price"] - 1) * 100:.0f}%</div>
+  <div class="fpr-tile-foot">priciest vs cheapest · {len(ci)} cities reporting</div></div>
+<div class="fpr-tile"><div class="fpr-tile-label">{html.escape(CITY)}</div><div class="fpr-tile-value">{mine_txt}</div>
+  <div class="fpr-tile-foot">{mine_foot}</div></div></div>""")
+        st.html('<div style="height:14px"></div>')
+
+        left, right = st.columns([1, 1.5], gap="medium")
+        with left, st.container(key="card-in-rank"):
+            card_head(f"{item}: price by city", "Median over the comparison window · selected city highlighted")
+            if not ci.empty:
+                ci = ci.assign(
+                    sel=ci["city"].eq(CITY).map({True: "Selected city", False: "Other cities"}), lbl=ci["price"].map(rs)
+                )
+                bars = (
+                    alt.Chart(ci)
+                    .mark_bar(cornerRadiusEnd=4, height=16)
+                    .encode(
+                        y=alt.Y("city:N", sort=ci["city"].tolist(), title=None),
+                        x=alt.X("price:Q", title="₹/kg"),
+                        color=alt.Color(
+                            "sel:N",
+                            scale=alt.Scale(
+                                domain=["Selected city", "Other cities"], range=[t["series"][0], t["axis"]]
+                            ),
+                            legend=None,
+                        ),
+                        tooltip=[
+                            alt.Tooltip("city:N", title="City"),
+                            alt.Tooltip("price:Q", title="₹/kg", format=",.1f"),
+                            alt.Tooltip("days:Q", title="Days with data"),
+                        ],
+                    )
+                )
+                lbl = (
+                    alt.Chart(ci)
+                    .mark_text(align="left", dx=6, fontSize=11.5, color=t["ink2"])
+                    .encode(
+                        y=alt.Y("city:N", sort=ci["city"].tolist()),
+                        x="price:Q",
+                        text="lbl:N",
+                    )
+                )
+                show(alt.layer(bars, lbl), 30 * len(ci) + 40)
+
+        with right, st.container(key="card-in-trend"):
+            card_head(
+                f"{item}: price trend by city", "Weekly median · last 3 years of each city's data · hover to compare"
+            )
+            have = [c for c in CITIES if c in set(cityd.loc[cityd["commodity"] == item, "city"])]
+            default = [c for c in [CITY, "Delhi NCR", "Mumbai", "Bengaluru", "Kolkata"] if c in have]
+            pick = st.multiselect(
+                "Cities (up to 4)", have, default=list(dict.fromkeys(default))[:4], max_selections=4, key="in_cities"
+            )
+            tr = cityd[(cityd["commodity"] == item) & cityd["city"].isin(pick)]
+            tr = tr[tr["date"] >= tr["date"].max() - pd.Timedelta(days=3 * 365)] if not tr.empty else tr
+            trw = (
+                tr.assign(date=tr["date"].dt.to_period("W").dt.start_time)
+                .groupby(["date", "city"], as_index=False)["modal_price_kg"]
+                .median()
+            )
+            if not trw.empty:
+                show(line_chart(trw, "city", "modal_price_kg", [c for c in CITIES if c in pick], "₹/kg"), 300)
+
+        st.html('<div style="height:14px"></div>')
+        with st.container(key="card-in-heat"):
+            card_head(
+                "Where each item is cheap or expensive right now",
+                "Each city's price vs the India median for that item, same 4-week window · "
+                f'<span style="color:{t["div_pos"]};font-weight:600">blue = cheaper</span> · '
+                f'<span style="color:{t["div_neg"]};font-weight:600">red = pricier</span>',
+            )
+            hm = cur.copy()
+            hm["nat"] = hm.groupby("commodity")["price"].transform("median")
+            hm = hm[hm.groupby("commodity")["city"].transform("nunique") >= 3]  # need a few cities to compare
+            hm["vs"] = (hm["price"] / hm["nat"] - 1) * 100
+            hm["label"] = hm["vs"].map(lambda v: f"{v:+.0f}")
+            rows = [c for c in COMMODITY_ORDER if c in set(hm["commodity"])]
+            cols = [c for c in CITIES if c in set(hm["city"])]
+            x = alt.X("city:N", sort=cols, title=None, axis=alt.Axis(orient="top", labelAngle=0))
+            y = alt.Y("commodity:N", sort=rows, title=None, axis=alt.Axis(labelLimit=160))
+            heat = (
+                alt.Chart(hm)
+                .mark_rect(cornerRadius=3, stroke=t["surface"], strokeWidth=2)
+                .encode(
+                    x=x,
+                    y=y,
+                    color=alt.Color(
+                        "vs:Q",
+                        title="% vs India",
+                        scale=alt.Scale(
+                            domain=[-50, 0, 50],
+                            range=[t["div_pos"], t["div_mid"], t["div_neg"]],
+                            interpolate="lab",
+                            clamp=True,
+                        ),
+                        legend=alt.Legend(orient="right", direction="vertical", gradientLength=160),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("commodity:N", title="Item"),
+                        alt.Tooltip("city:N", title="City"),
+                        alt.Tooltip("price:Q", title="₹/kg", format=",.1f"),
+                        alt.Tooltip("nat:Q", title="India median ₹/kg", format=",.1f"),
+                        alt.Tooltip("vs:Q", title="% vs India", format="+.0f"),
+                    ],
+                )
+            )
+            txt = (
+                alt.Chart(hm)
+                .mark_text(fontSize=10)
+                .encode(
+                    x=x,
+                    y=y,
+                    text="label:N",
+                    color=alt.condition("datum.vs > 32 || datum.vs < -32", alt.value("#ffffff"), alt.value(t["ink2"])),
+                )
+            )
+            show(alt.layer(heat, txt), 24 * len(rows) + 40)
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
 # Prices
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 if PAGE == "Prices":
@@ -721,17 +948,14 @@ if PAGE == "Prices":
         commodities = [c for c in COMMODITY_ORDER if c in set(daily["commodity"])]
         f1, f2, f3 = st.columns([1, 2, 1.3], vertical_alignment="bottom")
         with f1:
-            commodity = st.selectbox("Commodity", commodities, index=0)
+            commodity = st.selectbox("Item", commodities, index=0)
         sub = daily[daily["commodity"] == commodity]
-        # stable color per mandi: hub first, then alphabetical (filters never repaint survivors)
-        all_mandis = (
-            [HUB] + sorted(m for m in sub["market"].unique() if m != HUB)
-            if HUB in set(sub["market"])
-            else sorted(sub["market"].unique())
-        )
+        # stable order (and so stable colors): the selected city's markets first, then every other market
+        city_markets = sorted(sub.loc[sub["city"] == CITY, "market"].unique())
+        all_mandis = city_markets + sorted(m for m in sub["market"].unique() if m not in city_markets)
         with f2:
             sources = [ln.split(":")[1].split("→")[0].strip() for ln in LANES if ln.startswith(commodity + ":")]
-            default = [m for m in [HUB, *sources] if m in all_mandis][:4] or all_mandis[:2]
+            default = [m for m in [*city_markets, *sources] if m in all_mandis][:4] or all_mandis[:2]
             mandis = st.multiselect("Markets (up to 4)", all_mandis, default=default, max_selections=4)
         with f3:
             period = st.segmented_control("Period", ["1Y", "3Y", "5Y", "All"], default="3Y")
@@ -759,13 +983,13 @@ if PAGE == "Prices":
 if PAGE == "Volatility":
     with content:
         if not vol.empty:
-            hubv = vol[(vol["market"] == HUB) & vol["log_return"].notna()]
+            hubv = cityv[(cityv["city"] == CITY) & cityv["log_return"].notna()]
             with st.container(key="card-vol-roll"):
                 card_head("Rolling 30-day volatility", "Spikes mark supply shocks: monsoon, festivals, export bans")
                 pick = st.multiselect(
                     "Items (up to 4)",
                     [c for c in COMMODITY_ORDER if c in set(hubv["commodity"])],
-                    default=["Tomato", "Onion", "Potato"],
+                    default=[c for c in ["Tomato", "Onion", "Potato"] if c in set(hubv["commodity"])],
                     max_selections=4,
                     key="volpick",
                 )
@@ -820,7 +1044,9 @@ if PAGE == "Volatility":
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 if PAGE == "Sourcing":
     with content:
-        if not spread.empty:
+        if not LANES:
+            no_lanes()
+        elif not spread.empty:
             top_l, top_r = st.columns([1.7, 1], gap="medium")
             with top_l, st.container(key="card-src-lane"):
                 f1, f2 = st.columns([1.4, 1], vertical_alignment="bottom")
@@ -861,13 +1087,16 @@ if PAGE == "Sourcing":
                 )
         st.html('<div style="height:14px"></div>')
         with st.container(key="card-src-all"):
-            card_head("Every lane: how often buying direct beats " + HUB, "Share of days the landed cost was lower")
+            card_head(
+                "Every lane in India: how often buying direct beats the city price",
+                "Share of days the landed cost (source + freight) was lower",
+            )
             sh = (spread.groupby("lane")["direct_sourcing_cheaper"].mean() * 100).reset_index(name="share")
             bars = (
                 alt.Chart(sh)
                 .mark_bar(cornerRadiusEnd=4, height=18, color=t["series"][0])
                 .encode(
-                    y=alt.Y("lane:N", sort=LANES, title=None, axis=alt.Axis(labelLimit=260)),
+                    y=alt.Y("lane:N", sort=ALL_LANES, title=None, axis=alt.Axis(labelLimit=260)),
                     x=alt.X("share:Q", title="% of days direct is cheaper", scale=alt.Scale(domain=[0, 100])),
                     tooltip=[
                         alt.Tooltip("lane:N", title="Lane"),
@@ -879,128 +1108,142 @@ if PAGE == "Sourcing":
                 text=alt.Text("share:Q", format=".0f")
             )
             even = alt.Chart(pd.DataFrame({"x": [50]})).mark_rule(color=t["muted"], strokeDash=[3, 3]).encode(x="x:Q")
-            show(alt.layer(bars, labels, even), 220)
+            show(alt.layer(bars, labels, even), 26 * len(ALL_LANES) + 50)
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # Signals
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 if PAGE == "Signals":
     with content:
-        if not alerts.empty:
-            with st.container(key="card-sig-now"):
-                card_head("Latest weekly signal per lane", "Alert = source market's weekly price up ≥10% week-on-week")
-                cards = []
-                for _, a in alerts.set_index("lane").reindex(LANES).dropna(subset=["message"]).reset_index().iterrows():
-                    on = bool(a["alert"])
-                    chg = a["source_week_change_pct"]
-                    cls = "fpr-up" if on else ""  # red only when the rule fires
-                    chip = (
-                        '<span class="fpr-status fpr-fail">▲ Alert</span>'
-                        if on
-                        else '<span class="fpr-status fpr-pass">● Calm</span>'
+        if not LANES:
+            no_lanes()
+        else:
+            if not alerts.empty:
+                with st.container(key="card-sig-now"):
+                    card_head(
+                        "Latest weekly signal per lane", "Alert = source market's weekly price up ≥10% week-on-week"
                     )
-                    cards.append(
-                        f'<div class="fpr-alert {"on" if on else ""}"><div class="lane">{html.escape(a["lane"])}</div>'
-                        f'<div class="chg {cls}">{chg:+.1f}%</div>'
-                        f'<div class="msg">{chip} · week of {a["week_of"]:%d %b %Y}<br>{html.escape(a["message"].replace(">=", "≥"))}</div></div>'
+                    cards = []
+                    for _, a in (
+                        alerts.set_index("lane").reindex(LANES).dropna(subset=["message"]).reset_index().iterrows()
+                    ):
+                        on = bool(a["alert"])
+                        chg = a["source_week_change_pct"]
+                        cls = "fpr-up" if on else ""  # red only when the rule fires
+                        chip = (
+                            '<span class="fpr-status fpr-fail">▲ Alert</span>'
+                            if on
+                            else '<span class="fpr-status fpr-pass">● Calm</span>'
+                        )
+                        cards.append(
+                            f'<div class="fpr-alert {"on" if on else ""}"><div class="lane">{html.escape(a["lane"])}</div>'
+                            f'<div class="chg {cls}">{chg:+.1f}%</div>'
+                            f'<div class="msg">{chip} · week of {a["week_of"]:%d %b %Y}<br>{html.escape(a["message"].replace(">=", "≥"))}</div></div>'
+                        )
+                    st.html(f'<div class="fpr-alerts">{"".join(cards)}</div>')
+            st.html('<div style="height:14px"></div>')
+            left, right = st.columns([1, 1], gap="medium")
+            with left, st.container(key="card-sig-bt"):
+                card_head("Does the alert work?", "% of weeks Delhi rose the week after a source spike vs in any week")
+                if not bt.empty:
+                    d = bt[bt["lane"].isin(LANES)].copy()
+                    d["lane"] = pd.Categorical(d["lane"], LANES)
+                    long = d.melt(["lane", "n_spikes"], ["hit_rate_pct", "base_rate_up_pct"], "kind", "rate").replace(
+                        {"hit_rate_pct": "After a spike", "base_rate_up_pct": "Any week"}
                     )
-                st.html(f'<div class="fpr-alerts">{"".join(cards)}</div>')
-        st.html('<div style="height:14px"></div>')
-        left, right = st.columns([1, 1], gap="medium")
-        with left, st.container(key="card-sig-bt"):
-            card_head("Does the alert work?", "% of weeks Delhi rose the week after a source spike vs in any week")
-            if not bt.empty:
-                d = bt.copy()
-                d["lane"] = pd.Categorical(d["lane"], LANES)
-                long = d.melt(["lane", "n_spikes"], ["hit_rate_pct", "base_rate_up_pct"], "kind", "rate").replace(
-                    {"hit_rate_pct": "After a spike", "base_rate_up_pct": "Any week"}
-                )
-                y = alt.Y("lane:N", sort=LANES, title=None, axis=alt.Axis(labelLimit=230))
-                x = alt.X("rate:Q", title="% of weeks Delhi rose", scale=alt.Scale(domain=[30, 70]))
-                link = (
-                    alt.Chart(d)
-                    .mark_rule(color=t["axis"], strokeWidth=3)
-                    .encode(y=y, x=alt.X("base_rate_up_pct:Q", scale=alt.Scale(domain=[30, 70])), x2="hit_rate_pct:Q")
-                )
-                dots = (
-                    alt.Chart(long)
-                    .mark_point(filled=True, size=120, strokeWidth=2)
-                    .encode(
-                        y=y,
-                        x=x,
-                        color=alt.Color(
-                            "kind:N",
-                            scale=alt.Scale(domain=["After a spike", "Any week"], range=[t["series"][0], t["muted"]]),
-                            legend=alt.Legend(symbolType="circle", symbolSize=90),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("lane:N", title="Lane"),
-                            alt.Tooltip("kind:N", title=""),
-                            alt.Tooltip("rate:Q", title="% weeks up", format=".1f"),
-                            alt.Tooltip("n_spikes:Q", title="Spike episodes"),
-                        ],
-                    )
-                )
-                edge = (
-                    alt.Chart(
-                        d.assign(
-                            edge=d["hit_rate_pct"] - d["base_rate_up_pct"],
-                            xpos=d[["hit_rate_pct", "base_rate_up_pct"]].max(axis=1),
+                    y = alt.Y("lane:N", sort=LANES, title=None, axis=alt.Axis(labelLimit=230))
+                    x = alt.X("rate:Q", title="% of weeks Delhi rose", scale=alt.Scale(domain=[30, 70]))
+                    link = (
+                        alt.Chart(d)
+                        .mark_rule(color=t["axis"], strokeWidth=3)
+                        .encode(
+                            y=y, x=alt.X("base_rate_up_pct:Q", scale=alt.Scale(domain=[30, 70])), x2="hit_rate_pct:Q"
                         )
                     )
-                    .mark_text(align="left", dx=10, fontSize=12, color=t["ink2"])
-                    .encode(
-                        y=y, x=alt.X("xpos:Q", scale=alt.Scale(domain=[30, 70])), text=alt.Text("edge:Q", format="+.1f")
-                    )
-                )
-                show(alt.layer(link, dots, edge), 250)
-        with right, st.container(key="card-sig-ll"):
-            card_head(
-                "Does the source lead Delhi?", "Correlation of week-on-week price changes, source leading by N weeks"
-            )
-            if not llw.empty:
-                h = llw.copy()
-                h["txt"] = h["corr"].map(lambda v: f"{v:.2f}")
-                y = alt.Y("lane:N", sort=LANES, title=None, axis=alt.Axis(labelLimit=230))
-                x = alt.X("lag_weeks:O", title="source leads by (weeks)", axis=alt.Axis(labelAngle=0))
-                heat = (
-                    alt.Chart(h)
-                    .mark_rect(cornerRadius=4, stroke=t["surface"], strokeWidth=2)
-                    .encode(
-                        y=y,
-                        x=x,
-                        color=alt.Color(
-                            "corr:Q",
-                            title="corr",
-                            scale=alt.Scale(
-                                domain=[-0.45, 0, 0.45],
-                                range=[t["div_neg"], t["div_mid"], t["div_pos"]],
-                                interpolate="lab",
+                    dots = (
+                        alt.Chart(long)
+                        .mark_point(filled=True, size=120, strokeWidth=2)
+                        .encode(
+                            y=y,
+                            x=x,
+                            color=alt.Color(
+                                "kind:N",
+                                scale=alt.Scale(
+                                    domain=["After a spike", "Any week"], range=[t["series"][0], t["muted"]]
+                                ),
+                                legend=alt.Legend(symbolType="circle", symbolSize=90),
                             ),
-                            legend=alt.Legend(
-                                orient="right", direction="vertical", gradientLength=120, symbolType="square"
+                            tooltip=[
+                                alt.Tooltip("lane:N", title="Lane"),
+                                alt.Tooltip("kind:N", title=""),
+                                alt.Tooltip("rate:Q", title="% weeks up", format=".1f"),
+                                alt.Tooltip("n_spikes:Q", title="Spike episodes"),
+                            ],
+                        )
+                    )
+                    edge = (
+                        alt.Chart(
+                            d.assign(
+                                edge=d["hit_rate_pct"] - d["base_rate_up_pct"],
+                                xpos=d[["hit_rate_pct", "base_rate_up_pct"]].max(axis=1),
+                            )
+                        )
+                        .mark_text(align="left", dx=10, fontSize=12, color=t["ink2"])
+                        .encode(
+                            y=y,
+                            x=alt.X("xpos:Q", scale=alt.Scale(domain=[30, 70])),
+                            text=alt.Text("edge:Q", format="+.1f"),
+                        )
+                    )
+                    show(alt.layer(link, dots, edge), 46 * len(LANES) + 90)
+            with right, st.container(key="card-sig-ll"):
+                card_head(
+                    "Does the source lead Delhi?",
+                    "Correlation of week-on-week price changes, source leading by N weeks",
+                )
+                if not llw.empty:
+                    h = llw[llw["lane"].isin(LANES)].copy()
+                    h["txt"] = h["corr"].map(lambda v: f"{v:.2f}")
+                    y = alt.Y("lane:N", sort=LANES, title=None, axis=alt.Axis(labelLimit=230))
+                    x = alt.X("lag_weeks:O", title="source leads by (weeks)", axis=alt.Axis(labelAngle=0))
+                    heat = (
+                        alt.Chart(h)
+                        .mark_rect(cornerRadius=4, stroke=t["surface"], strokeWidth=2)
+                        .encode(
+                            y=y,
+                            x=x,
+                            color=alt.Color(
+                                "corr:Q",
+                                title="corr",
+                                scale=alt.Scale(
+                                    domain=[-0.45, 0, 0.45],
+                                    range=[t["div_neg"], t["div_mid"], t["div_pos"]],
+                                    interpolate="lab",
+                                ),
+                                legend=alt.Legend(
+                                    orient="right", direction="vertical", gradientLength=120, symbolType="square"
+                                ),
                             ),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("lane:N", title="Lane"),
-                            alt.Tooltip("lag_weeks:O", title="Lead (weeks)"),
-                            alt.Tooltip("corr:Q", title="Correlation", format=".3f"),
-                            alt.Tooltip("n_weeks:Q", title="Paired weeks"),
-                            alt.Tooltip("reliable:N", title="Reliable"),
-                        ],
+                            tooltip=[
+                                alt.Tooltip("lane:N", title="Lane"),
+                                alt.Tooltip("lag_weeks:O", title="Lead (weeks)"),
+                                alt.Tooltip("corr:Q", title="Correlation", format=".3f"),
+                                alt.Tooltip("n_weeks:Q", title="Paired weeks"),
+                                alt.Tooltip("reliable:N", title="Reliable"),
+                            ],
+                        )
                     )
-                )
-                txt = (
-                    alt.Chart(h)
-                    .mark_text(fontSize=11.5)
-                    .encode(
-                        y=y,
-                        x=x,
-                        text="txt:N",
-                        color=alt.condition("datum.corr > 0.25", alt.value("#ffffff"), alt.value(t["ink"])),
+                    txt = (
+                        alt.Chart(h)
+                        .mark_text(fontSize=11.5)
+                        .encode(
+                            y=y,
+                            x=x,
+                            text="txt:N",
+                            color=alt.condition("datum.corr > 0.25", alt.value("#ffffff"), alt.value(t["ink"])),
+                        )
                     )
-                )
-                show(alt.layer(heat, txt), 250)
+                    show(alt.layer(heat, txt), 40 * len(LANES) + 60)
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # Data quality

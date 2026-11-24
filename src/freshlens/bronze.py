@@ -32,7 +32,7 @@ LINEAGE_COLS = ["_source", "_batch", "_source_file", "_fetched_at", "_ingested_a
 BRONZE_COLS = BUSINESS_COLS + LINEAGE_COLS
 
 
-def read_raw_pages(spark: SparkSession, folder: str | Path, source: str, batch: str) -> DataFrame | None:
+def read_raw_pages(spark: SparkSession, folder: str | Path, source: str, batch: str | None = None) -> DataFrame | None:
     """Read every ``page_*.json[.gz]`` under ``folder`` and flatten the ``records`` array."""
     folder = Path(folder)
     if not any(folder.rglob("page_*.json*")):
@@ -65,26 +65,21 @@ def read_raw_pages(spark: SparkSession, folder: str | Path, source: str, batch: 
     return rows.select(
         *BUSINESS_COLS,
         F.lit(source).alias("_source"),
-        F.lit(batch).alias("_batch"),
+        # one batch per history scope / daily ingest date, taken from the path when reading a whole source
+        (
+            F.lit(batch) if batch is not None else F.regexp_extract("_source_file", r"(?:scope|ingest_date)=([^/]+)", 1)
+        ).alias("_batch"),
         "_source_file",
         "_fetched_at",
         F.current_timestamp().alias("_ingested_at"),
     )
 
 
-def write_bronze(settings: Settings, df: DataFrame, source: str, batch: str) -> int:
+def write_bronze(settings: Settings, df: DataFrame, source: str, batch: str | None = None) -> int:
+    """Replace one (source, batch) slice, or the whole source when batch is None. Idempotent either way."""
     df = df.select(*BRONZE_COLS)
-    (
-        df.write.format("delta")
-        .mode("overwrite")
-        .option("replaceWhere", f"_source = '{source}' AND _batch = '{batch}'")
-        .save(settings.table("bronze", "prices"))
-    )
-    n = (
-        df.sparkSession.read.format("delta")
-        .load(settings.table("bronze", "prices"))
-        .where((F.col("_source") == source) & (F.col("_batch") == batch))
-        .count()
-    )
+    where = f"_source = '{source}'" + (f" AND _batch = '{batch}'" if batch is not None else "")
+    df.write.format("delta").mode("overwrite").option("replaceWhere", where).save(settings.table("bronze", "prices"))
+    n = df.sparkSession.read.format("delta").load(settings.table("bronze", "prices")).where(where).count()
     log.info("bronze %s/%s: %d rows", source, batch, n)
     return n

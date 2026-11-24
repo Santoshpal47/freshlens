@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -22,6 +23,16 @@ from pyspark.sql import functions as F
 from freshlens.config import Settings
 
 log = logging.getLogger(__name__)
+
+MARKET_SUFFIX = r"(?i)\s+(APMC|\(F&V\))$"
+
+
+def clean_market_name(name: str, aliases: dict[str, str] | None = None) -> str:
+    """Python twin of the Spark cleaning below, so config names map onto silver's market names."""
+    s = re.sub(r"\s+", " ", name.strip())
+    s = re.sub(MARKET_SUFFIX, "", s)
+    return {k.strip().lower(): v for k, v in (aliases or {}).items()}.get(s.lower(), s)
+
 
 NATURAL_KEY = ["state", "district", "market", "commodity", "variety", "grade", "arrival_date"]
 PRICE_COLS = ["min_price", "max_price", "modal_price"]
@@ -58,7 +69,7 @@ def clean(bronze: DataFrame, settings: Settings) -> DataFrame:
 
     df = (
         df.withColumn("market_raw", F.col("market"))
-        .withColumn("market", F.regexp_replace("market", r"(?i)\s+(APMC|\(F&V\))$", ""))
+        .withColumn("market", F.regexp_replace("market", MARKET_SUFFIX, ""))
         .withColumn("market", _apply_aliases(F.col("market"), aliases.get("market", {})))
         .withColumn("commodity", _apply_aliases(F.col("commodity"), aliases.get("commodity", {})))
         .withColumn("arrival_date", _parse_date(F.col("arrival_date")))
@@ -111,12 +122,10 @@ def _silver_select(df: DataFrame) -> DataFrame:
     )
 
 
-def upsert_silver(spark: SparkSession, settings: Settings, source: str, batch: str) -> SilverResult:
-    bronze = (
-        spark.read.format("delta")
-        .load(settings.table("bronze", "prices"))
-        .where((F.col("_source") == source) & (F.col("_batch") == batch))
-    )
+def upsert_silver(spark: SparkSession, settings: Settings, source: str, batch: str | None = None) -> SilverResult:
+    """MERGE one bronze slice into silver: a single batch, or every batch of a source when batch is None."""
+    where = f"_source = '{source}'" + (f" AND _batch = '{batch}'" if batch is not None else "")
+    bronze = spark.read.format("delta").load(settings.table("bronze", "prices")).where(where)
     cleaned = clean(bronze, settings).cache()
 
     # 1) quarantine — replaced per batch so re-runs don't duplicate
@@ -126,7 +135,7 @@ def upsert_silver(spark: SparkSession, settings: Settings, source: str, batch: s
     (
         bad.write.format("delta")
         .mode("overwrite")
-        .option("replaceWhere", f"_source = '{source}' AND _batch = '{batch}'")
+        .option("replaceWhere", where)
         .save(settings.table("silver", "quarantine"))
     )
     n_bad = bad.count()

@@ -92,23 +92,28 @@ def run_checks(
         )
     )
 
-    # tracked mandis (lanes) that have gone quiet
-    tracked = {(ln["source"].lower(), ln["commodity"].lower()) for ln in settings.lanes}
-    tracked |= {(ln["destination"].lower(), ln["commodity"].lower()) for ln in settings.lanes}
-    last_seen = {
-        (r["m"], r["c"]): r["last"]
-        for r in silver.groupBy(F.lower("market").alias("m"), F.lower("commodity").alias("c"))
+    # tracked lane ends that have gone quiet: source markets, and destination cities (any of its markets)
+    city_of = settings.market_city()
+    seen = (
+        silver.groupBy(F.lower("market").alias("m"), F.lower("commodity").alias("c"))
         .agg(F.max("arrival_date").alias("last"))
         .collect()
-    }
+    )
+    last_seen: dict[tuple[str, str], date] = {}
+    for r in seen:
+        for key in ((r["m"], r["c"]), (city_of.get(r["m"], "").lower(), r["c"])):
+            if key[0] and (key not in last_seen or r["last"] > last_seen[key]):
+                last_seen[key] = r["last"]
+    tracked = {(ln["source"].lower(), ln["commodity"].lower()) for ln in settings.lanes}
+    tracked |= {(ln["city"].lower(), ln["commodity"].lower()) for ln in settings.lanes}
     quiet = []
     for key in sorted(tracked):
-        seen = last_seen.get(key)
-        if latest and (seen is None or (latest - seen).days > q["stopped_reporting_days"]):
-            quiet.append(f"{key[0]}/{key[1]} last={seen}")
+        seen_on = last_seen.get(key)
+        if latest and (seen_on is None or (latest - seen_on).days > q["stopped_reporting_days"]):
+            quiet.append(f"{key[0]}/{key[1]} last={seen_on}")
     checks.append(
         Check(
-            "tracked_mandis_reporting",
+            "tracked_lanes_reporting",
             "warn",
             not quiet,
             f"{len(quiet)} silent",

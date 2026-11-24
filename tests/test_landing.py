@@ -36,3 +36,13 @@ def test_overlapping_pages_are_flagged_incomplete(settings):
     land_history(settings, FakeClient(duplicate_page=True), {"Market": "Azadpur", "Commodity": "Tomato"})
     s = _success(settings, None)
     assert (s["rows"], s["distinct"], s["complete"]) == (5, 3, False)
+
+
+def test_a_market_without_the_item_is_complete_but_empty(settings):
+    class EmptyClient(FakeClient):
+        def pages(self, resource, filters, start_offset=0, extra_params=None):
+            yield Page(offset=0, total=None, records=[])
+
+    land_history(settings, EmptyClient(), {"Market": "Mumbai", "Commodity": "Capsicum"})
+    s = _success(settings, None)
+    assert s["complete"] is True and s["empty"] is True

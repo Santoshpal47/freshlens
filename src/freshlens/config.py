@@ -59,6 +59,18 @@ class Settings:
         return {c: names.get(c, c) for c in self.commodities}
 
     @property
+    def cities(self) -> dict[str, list[str]]:
+        """City → its wholesale markets, spelled as the API spells them (used for history filters)."""
+        return self.cfg.get("cities") or {"Delhi NCR": [self.cfg.get("history", {}).get("hub_market", "Azadpur")]}
+
+    def market_city(self) -> dict[str, str]:
+        """Cleaned, lower-cased market name (as it appears in silver) → city."""
+        from freshlens.silver import clean_market_name
+
+        aliases = self.aliases.get("market", {})
+        return {clean_market_name(m, aliases).lower(): city for city, ms in self.cities.items() for m in ms}
+
+    @property
     def home_state(self) -> str:
         return self.cfg["home_state"]
 

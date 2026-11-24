@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from pyspark.sql import SparkSession
@@ -36,6 +37,9 @@ def get_spark(app_name: str = "freshlens") -> SparkSession:
 
     _ensure_java()
     os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
+    # workers must run the driver's interpreter, not whatever `python3` is first on PATH
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
     warehouse = Path(os.environ.get("FPR_DATA_ROOT", PROJECT_ROOT / "data")) / "spark-warehouse"
     builder = (
         SparkSession.builder.master(os.environ.get("FPR_SPARK_MASTER", "local[*]"))

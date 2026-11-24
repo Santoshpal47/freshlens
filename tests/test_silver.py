@@ -78,3 +78,12 @@ def test_gzip_raw_pages_are_read(spark, settings, tmp_path):
     (folder / "page_00000000.json.gz").write_bytes(gzip.compress(json.dumps(page).encode()))
     df = bronze.read_raw_pages(spark, folder, "daily", "t")
     assert df is not None and df.count() == 1 and df.first()["market"] == "Azadpur APMC"
+
+
+def test_whole_history_is_read_in_one_pass_with_batch_from_path(spark, settings, tmp_path):
+    root = tmp_path / "history"
+    write_page(root / "scope=commodity-tomato__market-azadpur", [rec()], source="history")
+    write_page(root / "scope=commodity-onion__market-pune", [rec(market="Pune", commodity="Onion")], source="history")
+    df = bronze.read_raw_pages(spark, root, "history")  # batch=None → one batch per scope folder
+    got = {(r["_batch"], r["commodity"]) for r in df.select("_batch", "commodity").collect()}
+    assert got == {("commodity-tomato__market-azadpur", "Tomato"), ("commodity-onion__market-pune", "Onion")}

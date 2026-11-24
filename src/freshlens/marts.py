@@ -1,6 +1,8 @@
 """Analytical marts on top of the star schema.
 
 mart_mandi_daily      one price per mandi × commodity × day (median across varieties/grades)
+mart_city_daily       one price per city × commodity × day (median across the city's markets)
+mart_city_volatility  volatility on the city series
 mart_volatility       day-on-day log returns, rolling volatility and coefficient of variation
 mart_sourcing_spread  Delhi price vs (source-mandi price + freight) for each configured lane
 mart_lead_lag         correlation of Delhi returns with source returns shifted by 0..N days
@@ -48,14 +50,28 @@ def mandi_daily(spark: SparkSession, settings: Settings) -> DataFrame:
             F.max(F.col("max_price_qtl") / 100).alias("max_price_kg"),
             F.count("*").alias("n_quotes"),
         )
-        .join(mandi.select("mandi_key", "state", "market", "role"), "mandi_key")
+        .join(mandi.select("mandi_key", "state", "market", "city", "role"), "mandi_key")
         .join(com.select("commodity_key", "commodity", "display_name", "category"), "commodity_key")
     )
 
 
-def volatility(daily: DataFrame, settings: Settings) -> DataFrame:
+def city_daily(daily: DataFrame) -> DataFrame:
+    """One price per city × item × day: median across the city's markets that reported that day."""
+    return (
+        daily.where(F.col("city").isNotNull())
+        .groupBy("date", "city", "commodity_key", "commodity", "display_name", "category")
+        .agg(
+            F.percentile_approx("modal_price_kg", 0.5).alias("modal_price_kg"),
+            F.countDistinct("market").alias("n_markets"),
+        )
+    )
+
+
+def volatility(
+    daily: DataFrame, settings: Settings, keys: tuple[str, ...] = ("mandi_key", "commodity_key")
+) -> DataFrame:
     a = settings.analysis
-    series = Window.partitionBy("mandi_key", "commodity_key").orderBy("date")
+    series = Window.partitionBy(*keys).orderBy("date")
     df = (
         daily.withColumn("day", _day())
         .withColumn("prev_price", F.lag("modal_price_kg").over(series))
@@ -69,7 +85,7 @@ def volatility(daily: DataFrame, settings: Settings) -> DataFrame:
         )
     )
     for n in a["volatility_windows"]:
-        w = Window.partitionBy("mandi_key", "commodity_key").orderBy("day").rangeBetween(-(n - 1), 0)
+        w = Window.partitionBy(*keys).orderBy("day").rangeBetween(-(n - 1), 0)
         df = (
             df.withColumn(f"vol_{n}d_pct", F.round(F.stddev("log_return").over(w) * 100, 2))
             .withColumn(
@@ -83,10 +99,10 @@ def volatility(daily: DataFrame, settings: Settings) -> DataFrame:
 def _lane_frame(spark: SparkSession, settings: Settings) -> DataFrame:
     rows = [
         (
-            f"{ln['commodity']}: {ln['source']} → {ln['destination']}",
+            f"{ln['commodity']}: {ln['source']} → {ln['city']}",
             ln["commodity"],
             ln["source"],
-            ln["destination"],
+            ln["city"],
             float(ln["freight_per_kg"]),
         )
         for ln in settings.lanes
@@ -260,14 +276,22 @@ def alert_backtest(src_w: DataFrame, dst_w: DataFrame, settings: Settings) -> tu
 def build_marts(spark: SparkSession, settings: Settings) -> None:
     daily = mandi_daily(spark, settings)
     _write(daily, settings, "mart_mandi_daily")
+    daily = _read(spark, settings, "gold", "mart_mandi_daily")
 
-    vol = volatility(_read(spark, settings, "gold", "mart_mandi_daily"), settings)
-    _write(vol, settings, "mart_volatility")
+    _write(city_daily(daily), settings, "mart_city_daily")
+    _write(volatility(daily, settings), settings, "mart_volatility")  # per market (lane sources)
+    _write(
+        volatility(_read(spark, settings, "gold", "mart_city_daily"), settings, ("city", "commodity_key")),
+        settings,
+        "mart_city_volatility",
+    )
     vol = _read(spark, settings, "gold", "mart_volatility")
+    city_vol = _read(spark, settings, "gold", "mart_city_volatility").withColumn("market", F.col("city"))
 
+    # lanes: source = a market, destination = a city (city price = median of its markets)
     lanes = _lane_frame(spark, settings)
     src = _lane_side(vol, lanes, "source").cache()
-    dst = _lane_side(vol, lanes, "destination").cache()
+    dst = _lane_side(city_vol, lanes, "destination").cache()
 
     _write(sourcing_spread(src, dst), settings, "mart_sourcing_spread")
     ll = lead_lag(spark, src, dst, settings)

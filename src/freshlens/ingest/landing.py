@@ -87,16 +87,13 @@ def land_daily(settings: Settings, client: DataGovClient, ingest_date: date) -> 
 
 
 def history_scopes(settings: Settings) -> list[dict[str, str]]:
-    """Backfill scope: the main Delhi terminal mandi for every commodity, plus both ends of every lane.
+    """Backfill scope: every item at every city market (pan-India), plus the source end of every lane.
 
-    ``history.extra_scopes`` in settings.yaml can add wider pulls (e.g. every Delhi mandi).
+    ``history.extra_scopes`` in settings.yaml can add wider pulls.
     """
-    hub = settings.cfg.get("history", {}).get("hub_market", "Azadpur")
-    scopes = []  # lanes first: they feed the spread and lead-lag marts
-    for lane in settings.lanes:
-        for market in (lane["destination"], lane["source"]):
-            scopes.append({"Market": market, "Commodity": lane["commodity"]})
-    scopes += [{"Market": hub, "Commodity": c} for c in settings.commodities]
+    scopes = [{"Market": lane["source"], "Commodity": lane["commodity"]} for lane in settings.lanes]
+    for markets in settings.cities.values():
+        scopes += [{"Market": m, "Commodity": c} for m in markets for c in settings.commodities]
     scopes += settings.cfg.get("history", {}).get("extra_scopes", []) or []
     unique = {scope_slug(s): s for s in scopes}
     return list(unique.values())
@@ -143,4 +140,6 @@ def completeness(scope_dir: Path) -> dict[str, Any]:
         for rec in body["records"]:
             seen.add(json.dumps(rec, sort_keys=True))
             n += 1
+    if n == 0 and not total:  # the market doesn't trade/report this item: complete, just empty
+        return {"total": 0, "rows": 0, "distinct": 0, "complete": True, "empty": True}
     return {"total": total, "rows": n, "distinct": len(seen), "complete": total is not None and len(seen) >= int(total)}

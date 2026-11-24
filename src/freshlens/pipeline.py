@@ -13,7 +13,7 @@ from pyspark.sql import SparkSession
 from freshlens import bronze, gold, marts, quality, silver
 from freshlens.config import Settings, api_key
 from freshlens.ingest.api_client import DataGovClient
-from freshlens.ingest.landing import history_scopes, land_daily, land_history, scope_slug
+from freshlens.ingest.landing import history_scopes, land_daily, land_history
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def make_client(settings: Settings) -> DataGovClient:
     )
 
 
-def _process_batch(spark: SparkSession, settings: Settings, folder: Path, source: str, batch: str):
+def _process_batch(spark: SparkSession, settings: Settings, folder: Path, source: str, batch: str | None):
     df = bronze.read_raw_pages(spark, folder, source, batch)
     if df is None:
         return 0, None
@@ -61,18 +61,18 @@ def run_daily(spark: SparkSession, settings: Settings, run_date: date, fetch: bo
     _publish(spark, settings, [result], run_id, run_date, loaded)
 
 
-def run_backfill(spark: SparkSession, settings: Settings, fetch: bool = True) -> None:
+def run_backfill(spark: SparkSession, settings: Settings, fetch: bool = True, workers: int = 3) -> None:
+    """Land every history scope (resumable, parallel), then process all history in a single pass."""
     run_id = f"backfill-{datetime.now():%Y%m%dT%H%M%S}"
-    client = make_client(settings) if fetch else None
-    results, loaded = [], 0
-    for filters in history_scopes(settings):
-        folder = Path(settings.raw_root) / "history" / f"scope={scope_slug(filters)}"
-        if fetch:
-            land_history(settings, client, filters)
-        n, res = _process_batch(spark, settings, folder, "history", scope_slug(filters))
-        loaded += n
-        results.append(res)
-    _publish(spark, settings, results, run_id, date.today(), loaded)
+    if fetch:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            jobs = [pool.submit(land_history, settings, make_client(settings), f) for f in history_scopes(settings)]
+            for job in jobs:
+                job.result()
+    loaded, result = _process_batch(spark, settings, Path(settings.raw_root) / "history", "history", None)
+    _publish(spark, settings, [result], run_id, date.today(), loaded)
 
 
 def rebuild(spark: SparkSession, settings: Settings) -> None:

@@ -57,6 +57,7 @@ def build_dims(spark: SparkSession, settings: Settings) -> None:
 
     seed = load_geo_seed(spark, settings)
     mandis = silver.select("state", "district", "market").distinct()
+    city_map = F.create_map(*[x for k, v in settings.market_city().items() for x in (F.lit(k), F.lit(v))])
     dim_mandi = mandis.join(
         seed,
         (F.lower(mandis.state) == F.lower(seed.seed_state)) & (F.lower(mandis.market) == F.lower(seed.seed_market)),
@@ -66,6 +67,7 @@ def build_dims(spark: SparkSession, settings: Settings) -> None:
         "state",
         "district",
         "market",
+        F.try_element_at(city_map, F.lower("market")).alias("city"),  # null = not one of the tracked cities
         "lat",
         "lon",
         "h3_r7",

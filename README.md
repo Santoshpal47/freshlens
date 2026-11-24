@@ -1,20 +1,25 @@
 # FreshLens
 
-**Fresh-produce price intelligence for quick commerce.** A self-updating data pipeline and dashboard that
-turns India's government wholesale-market (mandi) price feed into sourcing signals for Delhi NCR dark stores.
+**Fresh-produce price intelligence for quick commerce, across India.** A self-updating data pipeline and
+dashboard that turns India's government wholesale-market (mandi) price feed into sourcing signals for
+dark stores in **10 cities**: Delhi NCR, Mumbai, Pune, Bengaluru, Hyderabad, Kolkata, Lucknow, Jaipur,
+Chandigarh and Ahmedabad.
 
-**Live dashboard: [freshlens-santoshpal-47.streamlit.app](https://freshlens-santoshpal-47.streamlit.app/?page=Overview)** · refreshed every night at 22:30 IST by GitHub Actions.
+**Live dashboard: [freshlens-santoshpal-47.streamlit.app](https://freshlens-santoshpal-47.streamlit.app/?page=Overview)** · refreshed every evening (19:00 and 22:30 IST) by GitHub Actions.
 
-Every day India's ~3,000 APMC wholesale markets (mandis) report what produce sold for. A dark-store
-network in Delhi buys mostly through Azadpur, but the price there is set by what happens days earlier in
-Kolar, Madanapalli and Lasalgaon. This project turns the raw government feed into three answers a
-category/sourcing team can act on:
+Every day India's ~3,000 APMC wholesale markets report what produce sold for. A dark-store network buys
+mostly through its city's terminal market (Azadpur in Delhi, Vashi in Mumbai, Binny Mill in Bengaluru),
+but the price there is set by what happens in source markets like Kolar, Madanapalli and Lasalgaon. This
+project turns the raw government feed into answers a category or sourcing team can act on:
 
-1. **How volatile is each SKU right now?** Rolling 7/30-day volatility of daily price moves, used for
-   safety stock and price-change cadence.
-2. **Is it cheaper to buy at the source mandi?** Delhi price vs. source price + freight, per lane, per day.
-3. **Is a Delhi price spike coming?** Whether the source mandi leads Delhi, and a back-tested
-   "source up ≥10% this week → Delhi up next week" alert.
+1. **How volatile is each item right now, in my city?** Rolling 7/30-day volatility of daily price moves,
+   used for safety stock and price-change cadence.
+2. **Where in India is an item cheap or expensive right now?** Every city's price against the India median
+   for the same 4-week window.
+3. **Is it cheaper to buy at the source market?** City price vs. source price + freight, per lane, per day
+   (15 lanes into 8 cities).
+4. **Is a price spike coming?** Whether the source market leads the city, and a back-tested
+   "source up ≥10% this week → city up next week" alert.
 
 | Day | Night |
 |---|---|
@@ -61,7 +66,10 @@ flowchart LR
 
 ## Data
 
-Scope: **30 fresh items** (19 vegetables, 10 fruits and coriander) at Azadpur, Delhi's benchmark wholesale market, plus 5 source markets. Items, English display names and categories live in `config/settings.yaml`. Add a line there and run `freshlens backfill`.
+Scope: **30 fresh items** (19 vegetables, 10 fruits and coriander) × **10 cities** (15 wholesale markets)
+plus 5 source markets. A city's price for an item on a day is the median of its markets that reported.
+Chennai is left out because Koyambedu barely reports to Agmarknet. Items, English display names, cities
+and lanes all live in `config/settings.yaml`. Add a line there and run `freshlens backfill`.
 
 | Source | What | Notes |
 |---|---|---|
@@ -111,15 +119,15 @@ above 5%, freshness, tracked mandis that went silent for more than 7 days, commo
 * **Volatility**: the standard deviation of day-on-day log returns over a 7/30-*calendar-day* window
   (`rangeBetween` on day numbers, not row counts). A return is dropped when it spans a reporting gap of
   more than 3 days, so a mandi closed for Diwali doesn't create a fake spike.
-* **Sourcing spread** = Delhi modal − (source modal + freight). Freight per lane is an explicit
+* **Sourcing spread** = city price − (source modal + freight). Freight per lane is an explicit
   assumption in `config/settings.yaml`. Replace it with real lane rates.
-* **Lead-lag**: for each lane and each lag k, `corr(Delhi return[t], source return[t−k])`. It runs
+* **Lead-lag**: for each lane and each lag k, `corr(city return[t], source return[t−k])`. It runs
   daily (k = 0..10 days) and on **weekly medians** (k = 0..6 weeks). A lag counts only with enough
   paired periods (60 days / 52 weeks) **and** a correlation of at least 0.15. Otherwise the mart says
   "no lead detected" instead of crowning noise.
-* **Alert back-test**: the source's weekly median is up ≥10% week-on-week. Is Delhi up the *next*
+* **Alert back-test**: the source's weekly median is up ≥10% week-on-week. Is the city up the *next*
   week? Each spike episode is counted once (its first week), and the hit rate is compared with the
-  base rate (how often Delhi rises in any week). An alert is only useful if it beats the base rate.
+  base rate (how often the city's price rises in any week). An alert is only useful if it beats the base rate.
 
 ## Run it
 
@@ -161,7 +169,7 @@ CI (`.github/workflows/ci.yml`) runs ruff and pytest on every push to `main`.
 
 Python 3.12 · PySpark 4.0 · Delta Lake 4.0 · H3 · Streamlit + delta-rs · pytest · ruff · uv · Databricks Asset Bundles · GitHub Actions
 
-## Results (real data, 2002 → 24 Nov 2026, 30 items, 135k cleaned price rows)
+## Results: Delhi NCR (real data, 2002 → 24 Nov 2026)
 
 Full tables are in [`docs/findings.md`](docs/findings.md), generated by `freshlens report` from the marts.
 Nothing there is typed by hand.

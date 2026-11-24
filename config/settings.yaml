@@ -63,20 +63,43 @@ display_names:
 # Where the dark stores are. Terminal markets in this state are the "destination" side.
 home_state: NCT of Delhi
 
-history:
-  hub_market: Azadpur        # Asia's largest F&V mandi; the Delhi price benchmark
-  # Wider pulls cost more API pages. Uncomment to backfill every Delhi mandi for a commodity:
-  extra_scopes: []
-  #  - {State: NCT of Delhi, Commodity: Tomato}
+# Pan-India coverage: each city's main wholesale (APMC) markets, spelled exactly as the API spells them.
+# A city's price for an item on a day = median across its markets that reported. Every market listed
+# has 15+ years of history for the staples. Chennai is left out: Koyambedu barely reports to Agmarknet.
+cities:
+  Delhi NCR:  [Azadpur]
+  Mumbai:     [Mumbai, Vashi New Mumbai]
+  Pune:       [Pune, Pune(Manjri)]
+  Bengaluru:  ["Binny Mill (F&V), Bangalore", Bangalore]
+  Hyderabad:  [Bowenpally, Gudimalkapur]
+  Kolkata:    [Sealdah Koley Market, Bara Bazar (Posta Bazar)]
+  Lucknow:    [Lucknow]
+  Jaipur:     [Jaipur (F&V)]
+  Chandigarh: [Chandigarh(Grain/Fruit)]
+  Ahmedabad:  [Ahmedabad]
 
-# Source-mandi → Delhi lanes. freight_per_kg is an ASSUMPTION (₹/kg, truck, incl. handling)
-# and should be replaced with your own lane rates — the spread is only as good as this number.
+history:
+  hub_market: Azadpur        # Delhi's benchmark (used by the findings report)
+  extra_scopes: []
+
+# Sourcing lanes: source market → destination city. freight_per_kg is an ASSUMPTION (₹/kg, truck,
+# incl. handling); replace with real lane rates. The spread is only as good as this number.
 lanes:
-  - {commodity: Onion,  source: Lasalgaon,   destination: Azadpur, freight_per_kg: 2.5}
-  - {commodity: Onion,  source: Pimpalgaon,  destination: Azadpur, freight_per_kg: 2.5}
-  - {commodity: Tomato, source: Kolar,       destination: Azadpur, freight_per_kg: 4.0}
-  - {commodity: Tomato, source: Madanapalli, destination: Azadpur, freight_per_kg: 4.0}
-  - {commodity: Potato, source: Agra,        destination: Azadpur, freight_per_kg: 1.0}
+  - {commodity: Onion,  source: Lasalgaon,   city: Delhi NCR, freight_per_kg: 2.5}
+  - {commodity: Onion,  source: Pimpalgaon,  city: Delhi NCR, freight_per_kg: 2.5}
+  - {commodity: Tomato, source: Kolar,       city: Delhi NCR, freight_per_kg: 4.0}
+  - {commodity: Tomato, source: Madanapalli, city: Delhi NCR, freight_per_kg: 4.0}
+  - {commodity: Potato, source: Agra,        city: Delhi NCR, freight_per_kg: 1.0}
+  - {commodity: Onion,  source: Lasalgaon,   city: Mumbai,    freight_per_kg: 1.0}
+  - {commodity: Onion,  source: Pimpalgaon,  city: Mumbai,    freight_per_kg: 1.0}
+  - {commodity: Onion,  source: Lasalgaon,   city: Pune,      freight_per_kg: 1.0}
+  - {commodity: Tomato, source: Kolar,       city: Bengaluru, freight_per_kg: 0.5}
+  - {commodity: Tomato, source: Madanapalli, city: Bengaluru, freight_per_kg: 1.0}
+  - {commodity: Tomato, source: Madanapalli, city: Hyderabad, freight_per_kg: 1.5}
+  - {commodity: Tomato, source: Kolar,       city: Hyderabad, freight_per_kg: 2.0}
+  - {commodity: Onion,  source: Lasalgaon,   city: Kolkata,   freight_per_kg: 3.5}
+  - {commodity: Potato, source: Agra,        city: Lucknow,   freight_per_kg: 1.0}
+  - {commodity: Potato, source: Agra,        city: Jaipur,    freight_per_kg: 1.2}
 
 analysis:
   max_lag_days: 10           # lead-lag search window
