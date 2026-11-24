@@ -95,6 +95,9 @@ def T() -> dict:
 
 
 def inject_css(t: dict) -> None:
+    night = st.session_state.night
+    sheen = "rgba(255,255,255,0.07)" if night else "rgba(255,255,255,0.75)"  # shimmer highlight
+    veil = "rgba(26,26,25,0.55)" if night else "rgba(255,255,255,0.5)"  # fades stale content under it
     st.markdown(
         f"""
 <style>
@@ -232,6 +235,30 @@ html, body, .stApp, [data-testid="stAppViewContainer"] {{ background: {t["page"]
 #vg-tooltip-element td.key {{ color: {t["muted"]} !important; }}
 #vg-tooltip-element td.value {{ color: {t["ink"]} !important; font-variant-numeric: tabular-nums; }}
 .vega-embed summary {{ display: none !important; }}
+
+/* ── loading shimmer ──
+   First visit: a skeleton of the page while the tables load.
+   Reruns (switching page / city / item): Streamlit marks old elements data-stale; instead of
+   dimming them, sweep a shimmer over the cards. Delayed 250 ms so fast reruns never flicker. */
+@keyframes fpr-sweep {{ from {{ background-position: 150% 0; }} to {{ background-position: -50% 0; }} }}
+@keyframes fpr-in {{ to {{ opacity: 1; }} }}
+.fpr-skel {{ border-radius: 7px; background-color: {t["surface2"]};
+  background-image: linear-gradient(100deg, transparent 30%, {sheen} 50%, transparent 70%);
+  background-size: 200% 100%; animation: fpr-sweep 1.3s linear infinite; }}
+.fpr-boot {{ display: grid; grid-template-columns: 1fr 5.2fr; gap: 16px; margin-top: 18px; }}
+.fpr-boot-col {{ display: flex; flex-direction: column; gap: 14px; }}
+.fpr-boot .fpr-tile {{ display: flex; flex-direction: column; gap: 10px; }}
+@media (max-width: 640px) {{ .fpr-boot {{ grid-template-columns: 1fr; }} }}
+.fpr-later {{ opacity: 0; animation: fpr-in .2s .25s forwards; }}
+[data-stale="true"] {{ opacity: 1 !important; transition: none !important; }}
+[class*="st-key-card"], .fpr-tile, .fpr-alert {{ position: relative; }}
+[class*="st-key-card"]:has([data-stale="true"])::after,
+[data-stale="true"] .fpr-tile::after, [data-stale="true"] .fpr-alert::after {{
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 5;
+  background-color: {veil};
+  background-image: linear-gradient(100deg, transparent 30%, {sheen} 50%, transparent 70%);
+  background-size: 200% 100%; opacity: 0;
+  animation: fpr-in .2s .25s forwards, fpr-sweep 1.3s linear infinite; }}
 </style>""",
         unsafe_allow_html=True,
     )
@@ -322,6 +349,21 @@ def pct_delta(now: float, then: float | None) -> str:
     return f'<span class="{cls}">{arrow} {abs(d):.1f}%</span> vs 4 weeks earlier'
 
 
+def skeleton(content_only: bool = False) -> str:
+    """Page-shaped placeholder: menu + stat tiles + chart card (content_only: just the right side)."""
+
+    def bar(w: str, h: int) -> str:
+        return f'<div class="fpr-skel" style="width:{w};height:{h}px"></div>'
+
+    nav = "".join(bar(w, 14) for w in ("40%", "90%", "35%", "80%", "75%", "85%", "70%", "80%"))
+    tile = f'<div class="fpr-tile">{bar("55%", 12)}{bar("65%", 28)}{bar("85%", 10)}</div>'
+    chart = f'<div class="fpr-tile">{bar("30%", 15)}{bar("45%", 11)}{bar("100%", 300)}</div>'
+    main = f'<div class="fpr-boot-col"><div class="fpr-tiles">{tile * 4}</div>{chart}</div>'
+    if content_only:
+        return f'<div class="fpr-boot fpr-later" style="display:block;margin-top:0">{main}</div>'
+    return f'<div class="fpr-boot"><div class="fpr-tile" style="gap:18px">{nav}</div>{main}</div>'
+
+
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=600)
 def load(name: str) -> pd.DataFrame:
@@ -347,8 +389,6 @@ def load(name: str) -> pd.DataFrame:
     return df
 
 
-daily = load("mart_mandi_daily")
-
 # ── header ────────────────────────────────────────────────────────────────────────────────────────
 head_l, head_r = st.columns([5, 1.2], vertical_alignment="center")
 with head_r:
@@ -356,6 +396,21 @@ with head_r:
 st.query_params["theme"] = "night" if st.session_state.night else "day"
 t = T()
 inject_css(t)
+
+boot = st.empty()  # first visit only: a shimmering skeleton until the tables are in memory
+if not st.session_state.get("booted"):
+    boot.html(skeleton())
+daily = load("mart_mandi_daily")
+cityd = load("mart_city_daily")  # one price per city × item × day (median of the city's markets)
+cityv = load("mart_city_volatility")
+vol = load("mart_volatility")
+spread = load("mart_sourcing_spread")
+llw = load("mart_lead_lag_weekly")
+lld = load("mart_lead_lag")
+bt = load("mart_alert_backtest")
+alerts = load("mart_alerts")
+boot.empty()
+st.session_state.booted = True
 
 if daily.empty:
     st.warning(f"No gold tables under {GOLD}. Run `uv run fpr backfill` first.")
@@ -408,15 +463,10 @@ with nav, st.container(key="navcard"):
     )
 st.query_params["page"] = PAGE
 st.query_params["city"] = CITY
+pending = content.empty()  # new page: a skeleton holds its place until the page is built
+if st.session_state.get("shown_page") != PAGE:
+    pending.html(skeleton(content_only=True))
 
-cityd = load("mart_city_daily")  # one price per city × item × day (median of the city's markets)
-cityv = load("mart_city_volatility")
-vol = load("mart_volatility")
-spread = load("mart_sourcing_spread")
-llw = load("mart_lead_lag_weekly")
-lld = load("mart_lead_lag")
-bt = load("mart_alert_backtest")
-alerts = load("mart_alerts")
 ALL_LANES = list(dict.fromkeys(spread["lane"])) if not spread.empty else []
 ALL_LANES = sorted(
     ALL_LANES,
@@ -1261,3 +1311,6 @@ if PAGE == "Signals":
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # Data quality
 # ════════════════════════════════════════════════════════════════════════════════════════════════
+
+pending.empty()
+st.session_state.shown_page = PAGE
