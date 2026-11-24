@@ -3,7 +3,7 @@
 **Fresh-produce price intelligence for quick commerce.** A self-updating data pipeline and dashboard that
 turns India's government wholesale-market (mandi) price feed into sourcing signals for Delhi NCR dark stores.
 
-**Live dashboard:** _link added after the first deploy_ · refreshed every night at 22:30 IST by GitHub Actions.
+**Live dashboard: [freshlens-santoshpal-47.streamlit.app](https://freshlens-santoshpal-47.streamlit.app/?page=Overview)** · refreshed every night at 22:30 IST by GitHub Actions.
 
 Every day India's ~3,000 APMC wholesale markets (mandis) report what produce sold for. A dark-store
 network in Delhi buys mostly through Azadpur, but the price there is set by what happens days earlier in

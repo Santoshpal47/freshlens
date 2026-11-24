@@ -652,7 +652,8 @@ if PAGE == "Overview":
             card_head(
                 "Seasonal price calendar",
                 f"Each item's typical price by month at {HUB}, as % of its yearly average · "
-                '<span class="fpr-down">blue = cheaper</span> · <span class="fpr-up">red = pricier</span>',
+                f'<span style="color:{t["div_pos"]};font-weight:600">blue = cheaper</span> · '
+                f'<span style="color:{t["div_neg"]};font-weight:600">red = pricier</span>',
             )
             ha = hubd.copy()
             ha["year"], ha["month"] = ha["date"].dt.year, ha["date"].dt.month
