@@ -316,7 +316,7 @@ def line_chart(df: pd.DataFrame, series: str, value: str, domain: list[str], y_t
         y=alt.Y(f"{value}:Q", title=y_title, axis=alt.Axis(format=",.0f")), color=color
     )
     hover = alt.selection_point(nearest=True, on="pointerover", fields=["date"], empty=False, clear="pointerout")
-    present = [d for d in domain if d in set(df[series])]
+    present = in_order(domain, df[series])
     rule = (
         base.transform_pivot(series, value=value, groupby=["date"])
         .mark_rule(color=t["axis"], strokeWidth=1)
@@ -365,8 +365,28 @@ def skeleton(content_only: bool = False) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=600)
+def in_order(order: list, values) -> list:
+    """The items of `order` that occur in `values`, keeping `order`'s order. Builds the set once:
+    `[c for c in order if c in set(col)]` rebuilds it per item (≈10 s per rerun on 900K rows)."""
+    seen = set(pd.unique(pd.Series(values)))
+    return [x for x in order if x in seen]
+
+
+def data_version(name: str) -> float:
+    """When a table last changed: the Delta log (dev) or the snapshot file (hosted)."""
+    delta, snap = GOLD / name / "_delta_log", SNAPSHOT / f"{name}.parquet"
+    if delta.exists():
+        return max((f.stat().st_mtime for f in delta.iterdir()), default=0.0)
+    return snap.stat().st_mtime if snap.exists() else 0.0
+
+
 def load(name: str) -> pd.DataFrame:
+    """A gold table, cached until the data is updated (not on a timer), so reruns never re-read it."""
+    return _load(name, data_version(name))
+
+
+@st.cache_data(show_spinner=False, max_entries=40)
+def _load(name: str, version: float) -> pd.DataFrame:
     """A gold table: the local Delta lake when present (dev), else the exported snapshot (hosted)."""
     delta, snap = GOLD / name, SNAPSHOT / f"{name}.parquet"
     if (delta / "_delta_log").exists():
@@ -621,7 +641,7 @@ elif PAGE == "Overview":
                 f"The 10 items furthest from their usual {last_month:%B} price (previous 5 years)",
             )
             rows = []
-            for c in [x for x in COMMODITY_ORDER if x in set(hubd["commodity"])]:
+            for c in in_order(COMMODITY_ORDER, hubd["commodity"]):
                 s_ = hubd[hubd["commodity"] == c].sort_values("date")
                 cur = s_.iloc[-1]
                 m = cur["date"].month
@@ -846,7 +866,7 @@ if PAGE == "India" and not cityd.empty:
         )
         spread_x = cur.groupby("commodity")["price"].agg(lambda p: p.max() / p.min() if p.min() > 0 else float("inf"))
         MIXED_UNITS = set(spread_x[spread_x > 8].index)  # e.g. coriander: some markets quote per bunch
-        items = [c for c in COMMODITY_ORDER if c in set(cur["commodity"])]
+        items = in_order(COMMODITY_ORDER, cur["commodity"])
 
         with st.container(key="card-in-pick"):
             f1, f2 = st.columns([1, 2.4], vertical_alignment="bottom")
@@ -928,7 +948,7 @@ if PAGE == "India" and not cityd.empty:
             card_head(
                 f"{item}: price trend by city", "Weekly median · last 3 years of each city's data · hover to compare"
             )
-            have = [c for c in CITIES if c in set(cityd.loc[cityd["commodity"] == item, "city"])]
+            have = in_order(CITIES, cityd.loc[cityd["commodity"] == item, "city"])
             default = [c for c in [CITY, "Delhi NCR", "Mumbai", "Bengaluru", "Kolkata"] if c in have]
             pick = st.multiselect(
                 "Cities (up to 4)", have, default=list(dict.fromkeys(default))[:4], max_selections=4, key="in_cities"
@@ -956,8 +976,8 @@ if PAGE == "India" and not cityd.empty:
             hm = hm[hm.groupby("commodity")["city"].transform("nunique") >= 3]  # need a few cities to compare
             hm["vs"] = (hm["price"] / hm["nat"] - 1) * 100
             hm["label"] = hm["vs"].map(lambda v: f"{v:+.0f}")
-            rows = [c for c in COMMODITY_ORDER if c in set(hm["commodity"])]
-            cols = [c for c in CITIES if c in set(hm["city"])]
+            rows = in_order(COMMODITY_ORDER, hm["commodity"])
+            cols = in_order(CITIES, hm["city"])
             x = alt.X("city:N", sort=cols, title=None, axis=alt.Axis(orient="top", labelAngle=0))
             y = alt.Y("commodity:N", sort=rows, title=None, axis=alt.Axis(labelLimit=160))
             heat = (
@@ -1008,7 +1028,7 @@ if PAGE == "India" and not cityd.empty:
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 if PAGE == "Prices":
     with content, st.container(key="card-prices"):
-        commodities = [c for c in COMMODITY_ORDER if c in set(daily["commodity"])]
+        commodities = in_order(COMMODITY_ORDER, daily["commodity"])
         f1, f2, f3 = st.columns([1, 2, 1.3], vertical_alignment="bottom")
         with f1:
             commodity = st.selectbox("Item", commodities, index=0)
@@ -1051,8 +1071,8 @@ if PAGE == "Volatility":
                 card_head("Rolling 30-day volatility", "Spikes mark supply shocks: monsoon, festivals, export bans")
                 pick = st.multiselect(
                     "Items (up to 4)",
-                    [c for c in COMMODITY_ORDER if c in set(hubv["commodity"])],
-                    default=[c for c in ["Tomato", "Onion", "Potato"] if c in set(hubv["commodity"])],
+                    in_order(COMMODITY_ORDER, hubv["commodity"]),
+                    default=in_order(["Tomato", "Onion", "Potato"], hubv["commodity"]),
                     max_selections=4,
                     key="volpick",
                 )
@@ -1072,7 +1092,7 @@ if PAGE == "Volatility":
                 rank = (hubv.groupby("commodity")["log_return"].std() * 100).reset_index(name="vol")
                 rank["category"] = rank["commodity"].map(lambda c: CATEGORY.get(c, "other").capitalize())
                 rank = rank.sort_values("vol", ascending=False)
-                cats = [c for c in ["Vegetable", "Fruit", "Herb"] if c in set(rank["category"])]
+                cats = in_order(["Vegetable", "Fruit", "Herb"], rank["category"])
                 bars = (
                     alt.Chart(rank)
                     .mark_bar(cornerRadiusEnd=4, height=14)
