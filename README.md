@@ -37,18 +37,20 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    IN[India-based machine<br/>18:30 + 22:30 IST] -->|land today's prices| DB[(data branch<br/>append-only raw, gzip)]
-    IN -->|trigger| GA[GitHub Actions]
-    DB --> GA --> L[(Delta lake<br/>Actions cache)]
+    GA[GitHub Actions<br/>19:00 + 22:30 IST] -->|request| RL[India relay<br/>Vercel, Mumbai]
+    RL -->|data.gov.in answers<br/>Indian IPs only| GA
+    GA -->|land today's prices| DB[(data branch<br/>append-only raw, gzip)]
+    DB --> L[(Delta lake<br/>Actions cache)]
     L -->|incremental MERGE<br/>or full rebuild| X[export<br/>1-2 MB snapshot]
     X -->|force-push single commit| DP[deploy branch]
     DP --> SC[Streamlit Community Cloud<br/>public dashboard]
 ```
 
-* **Landing runs in India.** `api.data.gov.in` only answers Indian IP addresses; from GitHub's US runners
-  every request times out. `scripts/sync_daily.sh`, scheduled by `scripts/install_scheduler.sh` (launchd),
-  lands the prices, pushes them and triggers the build. Everything heavy runs on GitHub. Any always-on box
-  in India works as the lander, such as a free Oracle Cloud VM in Mumbai.
+* **India relay.** `api.data.gov.in` only answers Indian IP addresses; from GitHub's US runners every
+  request times out. `relay/` is a 20-line Vercel function pinned to the Mumbai region (`bom1`) that
+  forwards data.gov.in requests only, protected by a shared key. The nightly workflow fetches through it,
+  so the whole system runs in the cloud with no laptop involved. `scripts/sync_daily.sh` remains as a
+  manual fallback for any machine in India.
 * **`data` branch**: the raw landing zone, append-only and gzip-compressed (about 19× smaller). This is
   the durable source of truth, and the whole lake can be rebuilt from it (`freshlens rebuild`).
 * **Delta lake** in the Actions cache, so a normal night processes only the last 3 landed days
