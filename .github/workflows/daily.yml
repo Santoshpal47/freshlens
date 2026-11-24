@@ -108,5 +108,7 @@ jobs:
           git config user.name "freshlens-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git add -f dashboard/snapshot                # .gitignore (copied from main) excludes it
+          test -n "$(git ls-files dashboard/snapshot)"  # never publish a deploy without data
           git commit -qm "deploy: code ${GITHUB_SHA::7} + data $(date -u +%F)"
           git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" deploy
