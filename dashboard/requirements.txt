@@ -1,0 +1,6 @@
+# Hosted dashboard only (Streamlit Community Cloud). The pipeline's own deps live in pyproject.toml.
+streamlit==1.67.0
+pandas>=2.2
+altair>=5.4
+pyarrow>=17
+pyyaml>=6

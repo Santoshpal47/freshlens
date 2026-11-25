@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#2a78d6"   # accent (toggle, focus rings, sliders) — same blue as series slot 1
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
